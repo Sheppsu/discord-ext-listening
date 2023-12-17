@@ -1,0 +1,10 @@
+.idea/
+audio-output/
+
+.env
+*.pyc
+
+discord/*
+!discord/ext/
+discord/ext/*
+!discord/ext/listening

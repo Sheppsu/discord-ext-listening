@@ -13,6 +13,8 @@ Read section below if you want a full explanation.
 
 How it works
 ------------
+THIS IS A BIT OUTDATED BECAUSE I JUST COPIED IT FROM THE PR, BUT THE CORE DESIGNS ARE STILL THE SAME.
+
 **User interaction**
 There are 6 user-facing methods: 
  - `listen`: tells an already initialized `AudioReceiver` (threading.Thread subclass) object to start listening. The object is initialized and started when the socket connection is first formed. The `AudioReceiver` object upon starting listening is passed some arguments the user specifies, most notably an `AudioSink` object. This sink object will be responsible for handling processed audio.

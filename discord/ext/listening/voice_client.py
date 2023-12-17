@@ -73,7 +73,7 @@ class AudioReceiver(threading.Thread):
         self._resumed: AsyncEventWrapper = AsyncEventWrapper()
         self._clean: AsyncEventWrapper = AsyncEventWrapper()
         self._clean.set()
-        self._connected: threading.Event = client._connection._connected
+        self._connected: threading.Event = client._connected
 
     def _do_run(self) -> None:
         while not self._end.is_set():
@@ -98,6 +98,8 @@ class AudioReceiver(threading.Thread):
             packet = future.result()
         except BaseException as exc:
             _log.exception("Exception occurred in audio process", exc_info=exc)
+            return
+        if self.sink is None:
             return
         if isinstance(packet, AudioFrame):
             sink_callback = self.sink.on_audio
@@ -188,6 +190,12 @@ class AudioReceiver(threading.Thread):
 class VoiceClient(BaseVoiceClient):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        try:
+            self.socket = self._connection.socket
+            self._connected = self._connection._connected
+        except AttributeError:
+            pass
 
         self._receiver: Optional[AudioReceiver] = None
         self._ssrc_map: Dict[int, Dict[str, Union[Member, Object]]] = {}
@@ -361,15 +369,14 @@ class VoiceClient(BaseVoiceClient):
         Optional[bytes]
             If audio was received then it's returned.
         """
-        socket = self._connection.socket
-        ready, _, err = select.select([socket], [], [socket], 0.01)
+        ready, _, err = select.select([self.socket], [], [self.socket], 0.01)
         if err:
             _log.error(f"Socket error: {err[0]}")
             return
         if not ready or not self.is_connected():
             return
 
-        data = socket.recv(4096)
+        data = self.socket.recv(4096)
         if dump:
             return
         return data

@@ -1,7 +1,7 @@
 NOTE: I've had the code for this ext for a while but forgot to actually put it on github. Right now I'm just putting it up without giving it more rigorous testing (I can't atm), but if it works then you can install via `pip install git+https://github.com/Sheppsu/discord-ext-listening` and check the examples folder.
 I'll soon give it proper testing and then put it up on pypi
 
-This is a [discord.py](https://github.com/rapptz/discord.py/) extension with functionality for listening in voice channels. It uses Python's standard multiprocessing library, striving for efficiency and a flexible design.
+This is a [discord.py](https://github.com/rapptz/discord.py/) extension with functionality for listening in voice channels. It uses Python's standard multiprocessing library for audio processing, striving for efficiency and a flexible design.
 
 How to use
 ----------

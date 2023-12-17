@@ -1,4 +1,4 @@
-# This example uses slash commands. You can learn more about them by looking at examples/app_commands/basic.py
+# This example uses slash commands. You can learn more about them by looking at https://github.com/Rapptz/discord.py/blob/master/examples/app_commands/basic.py
 
 from typing import Literal, Optional
 from dotenv import load_dotenv

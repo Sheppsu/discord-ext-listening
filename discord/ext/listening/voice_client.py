@@ -1,26 +1,22 @@
-from typing import Awaitable, Any, Callable, Dict, Optional, Union, TYPE_CHECKING
-from concurrent.futures import Future
-import select
-import logging
-import threading
-import queue
 import asyncio
+import logging
+import queue
+import select
+import threading
+from concurrent.futures import Future
+from typing import Any, Awaitable, Callable, Dict, Optional, Union
 
-from discord.voice_client import VoiceClient as BaseVoiceClient
 from discord.errors import ClientException
-from discord.object import Object
 from discord.member import Member
-from discord.utils import MISSING
+from discord.object import Object
+from discord.voice_client import VoiceClient as BaseVoiceClient
 
-from .sink import AudioSink, AudioFrame
 from . import opus
 from .enums import RTCPMessageType
 from .processing import AudioProcessPool
+from .sink import AudioFrame, AudioSink
 
-
-__all__ = (
-    "VoiceClient",
-)
+__all__ = ("VoiceClient",)
 
 
 _log = logging.getLogger(__name__)
@@ -84,12 +80,12 @@ class AudioReceiver(threading.Thread):
             if data is None:
                 continue
 
-            future = self.process_pool.submit(
+            future = self.process_pool.submit(  # type: ignore
                 data,
-                self.client.guild.id % self.process_pool.max_processes,
+                self.client.guild.id % self.process_pool.max_processes,  # type: ignore
                 self.decode,
                 self.client.mode,
-                self.client.secret_key
+                self.client.secret_key,
             )
             future.add_done_callback(self._audio_processing_callback)
 
@@ -107,7 +103,7 @@ class AudioReceiver(threading.Thread):
         else:
             sink_callback = self.sink.on_rtcp
             packet.pt = RTCPMessageType(packet.pt)
-        sink_callback(packet)
+        sink_callback(packet)  # type: ignore
 
     def run(self) -> None:
         try:
@@ -125,9 +121,12 @@ class AudioReceiver(threading.Thread):
                 _log.exception('Calling the after function failed.', exc_info=exc)
 
     def _cleanup_listen(self) -> None:
-        threading.Thread(target=self.sink.cleanup).start()
-        self._call_after()
-        self.sink = None
+        if self.sink is not None:
+            threading.Thread(target=self.sink.cleanup).start()
+            self._call_after()
+            self.sink = None
+        else:
+            _log.warning("Could not call cleanup on sink because the sink attribute is None")
         self._clean.set()
 
     def start_listening(
@@ -210,7 +209,8 @@ class VoiceClient(BaseVoiceClient):
         if not force and not self.is_connected():
             return
 
-        self._receiver.stop()
+        if self._receiver is not None:
+            self._receiver.stop()
         await super().disconnect(force=force)
 
     def update_ssrc(self, data):
@@ -223,7 +223,7 @@ class VoiceClient(BaseVoiceClient):
             user = self.guild.get_member(user_id)
             self._ssrc_map[ssrc] = {
                 "user": user if user is not None else Object(id=user_id, type=Member),
-                "speaking": speaking
+                "speaking": speaking,
             }
 
     def get_member_from_ssrc(self, ssrc) -> Optional[Union[Member, Object]]:
@@ -308,7 +308,7 @@ class VoiceClient(BaseVoiceClient):
             # Check that opus is loaded and throw error else
             opus.Decoder.get_opus_version()
 
-        self._receiver.start_listening(sink, processing_pool, decode=decode, after=after, after_kwargs=kwargs)
+        self._receiver.start_listening(sink, processing_pool, decode=decode, after=after, after_kwargs=kwargs)  # type: ignore
 
     def is_listening(self) -> bool:
         """Indicates if the client is currently listening and processing audio."""

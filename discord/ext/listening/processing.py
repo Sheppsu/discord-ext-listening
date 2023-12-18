@@ -1,18 +1,16 @@
+import multiprocessing
+import queue
+import struct
+import threading
 from concurrent.futures import Future
 from typing import Dict, List, Optional, Tuple, Union
-import queue
-import threading
+
 import nacl.secret
-import multiprocessing
-import struct
 
-from .sink import RTCPPacket, RawAudioData, AudioFrame, SILENT_FRAME, get_audio_packet
 from .opus import Decoder
+from .sink import SILENT_FRAME, AudioFrame, RawAudioData, RTCPPacket, get_audio_packet
 
-
-__all__ = (
-    "AudioProcessPool",
-)
+__all__ = ("AudioProcessPool",)
 
 
 _mp_ctx = multiprocessing.get_context("spawn")
@@ -41,11 +39,11 @@ class AudioProcessPool:
     def __init__(self, max_processes: int, *, wait_timeout: Optional[float] = 3):
         if max_processes < 1:
             raise ValueError("max_processes must be greater than 0")
-        if wait_timeout < 1:
+        if wait_timeout is None or wait_timeout < 1:
             raise ValueError("wait_timeout must be greater than 0")
 
         self.max_processes: int = max_processes
-        self.wait_timeout: Optional[int] = wait_timeout
+        self.wait_timeout: Optional[float] = wait_timeout
         self._processes: Dict[int, Tuple] = {}
         self._wait_queue: queue.Queue = queue.Queue()
         self._wait_loop_running: threading.Event = threading.Event()
@@ -105,7 +103,7 @@ class AudioUnpacker(_mp_ctx.Process):
         self.decoders: Dict[int, Decoder] = {}
 
     def run(self) -> None:
-        pipe = self._args[0]
+        pipe = self._args[0]  # type: ignore
         while True:
             try:
                 data, decode, mode, secret_key = pipe.recv()
@@ -115,7 +113,7 @@ class AudioUnpacker(_mp_ctx.Process):
                 packet = self.unpack_audio_packet(data, mode, decode)
                 if isinstance(packet, RTCPPacket):
                     # enum not picklable
-                    packet.pt = packet.pt.value
+                    packet.pt = packet.pt.value  # type: ignore
 
                 pipe.send(packet)
             except BaseException as exc:
@@ -123,7 +121,7 @@ class AudioUnpacker(_mp_ctx.Process):
                 return
 
     def _decrypt_xsalsa20_poly1305(self, header, data) -> bytes:
-        box = nacl.secret.SecretBox(bytes(self.secret_key))
+        box = nacl.secret.SecretBox(bytes(self.secret_key))  # type: ignore
 
         nonce = bytearray(24)
         nonce[:12] = header
@@ -131,7 +129,7 @@ class AudioUnpacker(_mp_ctx.Process):
         return self.strip_header_ext(box.decrypt(bytes(data), bytes(nonce)))
 
     def _decrypt_xsalsa20_poly1305_suffix(self, header, data) -> bytes:
-        box = nacl.secret.SecretBox(bytes(self.secret_key))
+        box = nacl.secret.SecretBox(bytes(self.secret_key))  # type: ignore
 
         nonce_size = nacl.secret.SecretBox.NONCE_SIZE
         nonce = data[-nonce_size:]
@@ -139,7 +137,7 @@ class AudioUnpacker(_mp_ctx.Process):
         return self.strip_header_ext(box.decrypt(bytes(data[:-nonce_size]), nonce))
 
     def _decrypt_xsalsa20_poly1305_lite(self, header, data) -> bytes:
-        box = nacl.secret.SecretBox(bytes(self.secret_key))
+        box = nacl.secret.SecretBox(bytes(self.secret_key))  # type: ignore
 
         nonce = bytearray(24)
         nonce[:4] = data[-4:]

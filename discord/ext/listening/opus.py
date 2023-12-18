@@ -1,9 +1,6 @@
 from discord.opus import Decoder as BaseDecoder
 
-
-__all__ = (
-    "Decoder",
-)
+__all__ = ("Decoder",)
 
 
 class Decoder(BaseDecoder):

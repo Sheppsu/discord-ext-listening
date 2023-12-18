@@ -1,9 +1,6 @@
 from discord.enums import Enum
 
-
-__all__ = (
-    "RTCPMessageType",
-)
+__all__ = ("RTCPMessageType",)
 
 
 class RTCPMessageType(Enum):

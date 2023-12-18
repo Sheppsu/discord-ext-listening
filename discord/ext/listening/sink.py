@@ -11,11 +11,12 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from .enums import RTCPMessageType
 from discord.errors import ClientException
 from discord.object import Object
-from .opus import Decoder as OpusDecoder
 from discord.player import CREATE_NO_WINDOW
+
+from .enums import RTCPMessageType
+from .opus import Decoder as OpusDecoder
 
 if TYPE_CHECKING:
     from discord.member import Member
@@ -944,7 +945,7 @@ class AudioFile:
         # the timestamp encompasses all that silence, including silence before the bot even
         # joined the vc. It goes in a pattern that the 6th packet has a 11 sequence skip, so
         # this last part of the if statement gets rid of that silence.
-        if self._last_timestamp is not None and not (self._packet_count == 6 and frame.sequence - self._last_sequence == 11):
+        if self._last_timestamp is not None and not (self._packet_count == 6 and frame.sequence - self._last_sequence == 11):  # type: ignore
             silence = frame.timestamp - self._last_timestamp - OpusDecoder.SAMPLES_PER_FRAME
             if silence > 0:
                 self.file.write(b"\x00" * silence * OpusDecoder.SAMPLE_SIZE)

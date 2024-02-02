@@ -191,7 +191,7 @@ async def gateway_hook(self: DiscordVoiceWebSocket, msg: Dict[str, Any]):
     # TODO: implement other voice events
     op: int = msg["op"]
     data: Dict[str, Any] = msg.get("d", {})
-    vc: VoiceClient = self._connection.voice_client  # type: ignore
+    vc: VoiceClient = self._connection
 
     if not isinstance(vc, VoiceClient):
         return

@@ -10,6 +10,7 @@ from discord.errors import ClientException
 from discord.member import Member
 from discord.object import Object
 from discord.voice_client import VoiceClient as BaseVoiceClient
+from discord.gateway import DiscordVoiceWebSocket
 
 from . import opus
 from .enums import RTCPMessageType

@@ -187,19 +187,6 @@ class AudioReceiver(threading.Thread):
         await self._clean.async_wait(self.loop if loop is None else loop)
 
 
-async def gateway_hook(self: DiscordVoiceWebSocket, msg: Dict[str, Any]):
-    # TODO: implement other voice events
-    op: int = msg["op"]
-    data: Dict[str, Any] = msg.get("d", {})
-    vc: VoiceClient = self._connection
-
-    if not isinstance(vc, VoiceClient):
-        return
-
-    if op == DiscordVoiceWebSocket.SPEAKING:
-        vc.update_ssrc(data)
-
-
 class VoiceClient(BaseVoiceClient):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -228,6 +215,8 @@ class VoiceClient(BaseVoiceClient):
         await super().disconnect(force=force)
 
     async def connect_websocket(self) -> DiscordVoiceWebSocket:
+        from .gateway import gateway_hook
+
         ws = await DiscordVoiceWebSocket.from_client(self, hook=gateway_hook)
         self._connected.clear()
         while ws.secret_key is None:

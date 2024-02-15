@@ -215,9 +215,9 @@ class VoiceClient(BaseVoiceClient):
         await super().disconnect(force=force)
 
     async def connect_websocket(self) -> DiscordVoiceWebSocket:
-        from .gateway import gateway_hook
+        from .gateway import hook
 
-        ws = await DiscordVoiceWebSocket.from_client(self, hook=gateway_hook)
+        ws = await DiscordVoiceWebSocket.from_client(self, hook=hook)
         self._connected.clear()
         while ws.secret_key is None:
             await ws.poll_event()

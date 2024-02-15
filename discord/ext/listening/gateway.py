@@ -1,9 +1,14 @@
 from typing import Any, Dict
 
-from .voice_client import DiscordVoiceWebSocket, VoiceClient
+from discord.gateway import DiscordVoiceWebSocket
+
+from .voice_client import VoiceClient
 
 
-async def gateway_hook(self: DiscordVoiceWebSocket, msg: Dict[str, Any]):
+__all__ = ("hook",)
+
+
+async def hook(self: DiscordVoiceWebSocket, msg: Dict[str, Any]):
     # TODO: implement other voice events
     op: int = msg["op"]
     data: Dict[str, Any] = msg.get("d", {})

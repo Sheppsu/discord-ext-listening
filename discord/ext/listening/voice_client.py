@@ -10,6 +10,7 @@ from discord.errors import ClientException
 from discord.member import Member
 from discord.object import Object
 from discord.voice_client import VoiceClient as BaseVoiceClient
+from discord.gateway import DiscordVoiceWebSocket
 
 from . import opus
 from .enums import RTCPMessageType
@@ -212,6 +213,16 @@ class VoiceClient(BaseVoiceClient):
         if self._receiver is not None:
             self._receiver.stop()
         await super().disconnect(force=force)
+
+    async def connect_websocket(self) -> DiscordVoiceWebSocket:
+        from .gateway import hook
+
+        ws = await DiscordVoiceWebSocket.from_client(self, hook=hook)
+        self._connected.clear()
+        while ws.secret_key is None:
+            await ws.poll_event()
+        self._connected.set()
+        return ws
 
     def update_ssrc(self, data):
         ssrc = data["ssrc"]

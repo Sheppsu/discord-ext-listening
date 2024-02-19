@@ -191,12 +191,6 @@ class VoiceClient(BaseVoiceClient):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        try:
-            self.socket = self._connection.socket
-            self._connected = self._connection._connected
-        except AttributeError:
-            pass
-
         self._receiver: Optional[AudioReceiver] = None
         self._ssrc_map: Dict[int, Dict[str, Union[Member, Object]]] = {}
 
@@ -368,12 +362,12 @@ class VoiceClient(BaseVoiceClient):
 
         You must be connected to receive audio.
 
-        Raises any error thrown by the connection socket.
+        Logs any error thrown by the connection socket.
 
         Parameters
         ----------
         dump: :class:`bool`
-            Will not return audio packet if true
+            Will not return data if true
 
         Returns
         -------

@@ -186,7 +186,11 @@ async def resume(interaction: discord.Interaction):
     await interaction.response.send_message("Recording resumed.")
 
 
-# THIS IF STATEMENT IS IMPORTANT FOR USING THIS EXTENSION
+# THIS IF STATEMENT IS IMPORTANT FOR USING THIS EXTENSION (because of multiprocessing)
 if __name__ == "__main__":
     load_dotenv()
-    client.run(os.getenv("DISCORD_TOKEN"))
+    try:
+        client.run(os.getenv("DISCORD_TOKEN"))
+    finally:
+        # good practice
+        process_pool.cleanup_processes()

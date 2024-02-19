@@ -1,50 +1,63 @@
 import multiprocessing
+import multiprocessing.context
 import queue
 import struct
 import threading
 from concurrent.futures import Future
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 
 import nacl.secret
 
 from .opus import Decoder
 from .sink import SILENT_FRAME, AudioFrame, RawAudioData, RTCPPacket, get_audio_packet
 
+
+if TYPE_CHECKING:
+    from multiprocessing.connection import Connection
+
+
 __all__ = ("AudioProcessPool",)
 
 
-_mp_ctx = multiprocessing.get_context("spawn")
+_mp_ctx: multiprocessing.context.SpawnContext = multiprocessing.get_context("spawn")
 
 
 class AudioProcessPool:
     """Process pool for processing audio packets received from voice channels.
+
+    Accepts submissions of raw audio data, which are sent to a child process for processing.
+    Audio is submitted with a specified process to use. If the specified process does not exist,
+    it is created. A separate thread is notified via a queue that it should be expecting to receive
+    processed audio from that process.
 
     Parameters
     ----------
     max_processes: :class:`int`
         The audio processing pool will distribute audio processing across
         this number of processes.
-    wait_timeout: Optional[:class:`int`]
-        A process will automatically finish when it has not received any audio
-        after this amount of time. Default is 3. None means it will never finish
-        via timeout.
+    wait_timeout: Optional[:class:`float`]
+        Decides how long the looping thread (explained above) waits to receive a result before finishing.
+        Default is 3. None means it will never finish via timeout.
+    process_patience: Optional[:class:`float`]
+        Decides how long a process will wait to receive audio until finishing.
+        Default is None, meaning a process will never finish itself via timeout.
 
     Raises
     ------
     ValueError
-        max_processes or wait_timeout must be greater than 0
+        max_processes must be greater than 0 or wait_timeout cannot be negative
     """
 
-    # TODO: add cleanup functionality
-    def __init__(self, max_processes: int, *, wait_timeout: Optional[float] = 3):
-        if max_processes < 1:
+    def __init__(self, max_processes: int, *, wait_timeout: Optional[float] = 3, process_patience: Optional[float] = None):
+        if max_processes <= 0:
             raise ValueError("max_processes must be greater than 0")
-        if wait_timeout is None or wait_timeout < 1:
-            raise ValueError("wait_timeout must be greater than 0")
+        if wait_timeout < 0:
+            raise ValueError("wait_timeout cannot be a negative number")
 
         self.max_processes: int = max_processes
         self.wait_timeout: Optional[float] = wait_timeout
-        self._processes: Dict[int, Tuple] = {}
+        self.process_patience: Optional[float] = process_patience
+        self._processes: Dict[int, Tuple[Connection, AudioUnpacker]] = {}
         self._wait_queue: queue.Queue = queue.Queue()
         self._wait_loop_running: threading.Event = threading.Event()
         self._lock: threading.Lock = threading.Lock()
@@ -66,9 +79,18 @@ class AudioProcessPool:
         self._lock.release()
         return future
 
+    def cleanup_processes(self):
+        self._lock.acquire()
+        for process in self._processes.values():
+            process[0].close()
+            process[1].terminate()
+            process[1].join()
+        self._processes = {}
+        self._lock.release()
+
     def _spawn_process(self, n_p) -> None:
         conn1, conn2 = _mp_ctx.Pipe(duplex=True)
-        process = AudioUnpacker(args=(conn2,))
+        process = AudioUnpacker(args=(conn2, self.process_patience))
         process.start()
         self._processes[n_p] = (conn1, process)
 
@@ -104,8 +126,13 @@ class AudioUnpacker(_mp_ctx.Process):
 
     def run(self) -> None:
         pipe = self._args[0]  # type: ignore
+        patience = self._args[1]
         while True:
             try:
+                if not pipe.poll(patience):
+                    pipe.close()
+                    return
+
                 data, decode, mode, secret_key = pipe.recv()
                 if secret_key is not None:
                     self.secret_key = secret_key
@@ -116,6 +143,8 @@ class AudioUnpacker(_mp_ctx.Process):
                     packet.pt = packet.pt.value  # type: ignore
 
                 pipe.send(packet)
+            except EOFError:
+                return
             except BaseException as exc:
                 pipe.send(exc)
                 return

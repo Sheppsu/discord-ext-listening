@@ -1,12 +1,10 @@
-import multiprocessing
 import multiprocessing.context
+import nacl.secret
 import queue
 import struct
 import threading
 from concurrent.futures import Future
 from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING
-
-import nacl.secret
 
 from .opus import Decoder
 from .sink import SILENT_FRAME, AudioFrame, RawAudioData, RTCPPacket, get_audio_packet
@@ -25,7 +23,7 @@ _mp_ctx: multiprocessing.context.SpawnContext = multiprocessing.get_context("spa
 class AudioProcessPool:
     """Process pool for processing audio packets received from voice channels.
 
-    Accepts submissions of raw audio data, which are sent to a child process for processing.
+    Accepts submissions of audio frames, which are sent to a child process for processing.
     Audio is submitted with a specified process to use. If the specified process does not exist,
     it is created. A separate thread is notified via a queue that it should be expecting to receive
     processed audio from that process.
@@ -60,9 +58,30 @@ class AudioProcessPool:
         self._processes: Dict[int, Tuple[Connection, AudioUnpacker]] = {}
         self._wait_queue: queue.Queue = queue.Queue()
         self._wait_loop_running: threading.Event = threading.Event()
+        # used for interacting with self._processes safely
         self._lock: threading.Lock = threading.Lock()
 
     def submit(self, data: bytes, n_p: int, decode: bool, mode: str, secret_key: List[int]) -> Future:
+        """Submit raw audio data for processing in a specific child process.
+
+        Parameters
+        ----------
+        data: :class:`bytes`
+            Audio frame to process
+        n_p: :class:`int`
+            Process index to send audio frame to
+        decode: :class:`bool`
+            Whether to perform decoding on the audio frame
+        mode: :class:`str`
+            Decryption mode
+        secret_key: List[:class:`str`]
+            Secret key used for nacl decryption
+
+        Returns
+        -------
+        :class:`Future`
+            A future that resolves when the process returns the processed audio frame or an error
+        """
         self._lock.acquire()
 
         if n_p >= self.max_processes:
@@ -73,6 +92,7 @@ class AudioProcessPool:
 
         future = Future()
         self._processes[n_p][0].send((data, decode, mode, secret_key))
+        # notify _recv_loop that it should expect to receive audio from this process
         self._wait_queue.put((n_p, future))
         self._start_recv_loop()
 
@@ -80,21 +100,24 @@ class AudioProcessPool:
         return future
 
     def cleanup_processes(self):
+        """Close all :class:`Connection` pipes and terminate all processes."""
         self._lock.acquire()
         for process in self._processes.values():
+            # close pipe and terminate process
             process[0].close()
             process[1].terminate()
-            process[1].join()
         self._processes = {}
         self._lock.release()
 
     def _spawn_process(self, n_p) -> None:
+        # the function calling this one must have acquired self._lock
         conn1, conn2 = _mp_ctx.Pipe(duplex=True)
         process = AudioUnpacker(args=(conn2, self.process_patience))
         process.start()
         self._processes[n_p] = (conn1, process)
 
     def _start_recv_loop(self) -> None:
+        # check if _recv_loop is running; if not, start running it in a new thread
         if not self._wait_loop_running.is_set():
             threading.Thread(target=self._recv_loop).start()
 
@@ -108,7 +131,9 @@ class AudioProcessPool:
             try:
                 ret = self._processes[n_p][0].recv()
             except EOFError:
+                # process probably terminated, but call to terminate is made just in case
                 self._lock.acquire()
+                self._processes[n_p][1].terminate()
                 self._processes.pop(n_p)
                 self._lock.release()
                 continue
@@ -144,6 +169,7 @@ class AudioUnpacker(_mp_ctx.Process):
 
                 pipe.send(packet)
             except EOFError:
+                # the pipe was closed for whatever reason so just terminate
                 return
             except BaseException as exc:
                 pipe.send(exc)

@@ -3,6 +3,7 @@
 from typing import Literal, Optional
 from dotenv import load_dotenv
 import os
+import subprocess
 
 import discord
 from discord import app_commands
@@ -83,9 +84,9 @@ async def send_audio_file(channel: discord.TextChannel, file: listening.AudioFil
 # regardless of if it's None or not.
 async def on_listen_finish(sink: listening.AudioFileSink, exc=None, channel=None):
     # Convert the raw recorded audio to its chosen file type
-    # and wait for it to finish.
-    sink.convert_files()
-    await sink.wait_for_convert()
+    # kwargs can be specified to convert_files, which will be specified to each AudioFile.convert call
+    # here, the stdout and stderr kwargs go to asyncio.create_subprocess_exec for ffmpeg
+    await sink.convert_files(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if channel is not None:
         for file in sink.output_files.values():
             await send_audio_file(channel, file)

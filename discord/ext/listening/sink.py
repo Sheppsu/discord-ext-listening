@@ -3,17 +3,14 @@ import logging
 import os
 import queue
 import struct
-import subprocess
 import threading
-import wave
 from collections import defaultdict
+from concurrent.futures import Future
 from dataclasses import dataclass
 from time import monotonic
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from discord.errors import ClientException
 from discord.object import Object
-from discord.player import CREATE_NO_WINDOW
 
 from .enums import RTCPMessageType
 from .opus import Decoder as OpusDecoder
@@ -755,11 +752,13 @@ class AudioFileSink(AudioHandlingSink):
         convert_files has been called.
     done: :class:`bool`
         Indicates whether cleanup has been called.
+    converted: :class:`bool`
+        Whether convert_files has been called and finished
     """
 
     VALIDATION_WAIT_TIMEOUT = 1
 
-    __slots__ = ("file_type", "output_dir", "output_files", "done", "_clean_lock", "_convert_lock", "_is_converted")
+    __slots__ = ("file_type", "output_dir", "output_files", "done", "_clean_lock", "_convert_lock", "converted")
 
     def __init__(self, file_type: Callable[[str, int], 'AudioFile'], output_dir: str = "."):
         super().__init__()
@@ -771,7 +770,7 @@ class AudioFileSink(AudioHandlingSink):
         self.done: bool = False
         self._clean_lock: threading.Lock = threading.Lock()
         self._convert_lock: threading.Lock = threading.Lock()
-        self._is_converted: asyncio.Event = asyncio.Event()
+        self.converted: bool = False
 
     def on_valid_audio(self, frame: AudioFrame) -> None:
         """Takes an audio frame and passes it to a :class:`AudioFile` object. If
@@ -782,9 +781,10 @@ class AudioFileSink(AudioHandlingSink):
         frame: :class:`AudioFrame`
             The frame which will be added to the buffer.
         """
+
         self._clean_lock.acquire()
         if self.done:
-            return
+            return self._clean_lock.release()
 
         if frame.ssrc not in self.output_files:
             self.output_files[frame.ssrc] = self.file_type(
@@ -814,40 +814,46 @@ class AudioFileSink(AudioHandlingSink):
 
         Sets `done` to True after calling all the cleanup functions.
         """
+
         self._done_validating.wait(self.VALIDATION_WAIT_TIMEOUT)
         self._clean_lock.acquire()
         if self.done:
-            return
+            return self._clean_lock.release()
+
         for file in self.output_files.values():
             file.cleanup()
         self.done = True
         self._clean_lock.release()
 
-    # TODO: implement different options of doing the conversion (in terms of threads n stuff)
-    # TODO: make vc.stop_listening asynchronous and also check other stuff in the library for possible bottlenecks
-    def convert_files(self) -> None:
+    async def convert_files(self, *args, **kwargs) -> Optional[List[Future]]:
         """Calls cleanup if it hasn't already been called and
-        then creates a thread to call convert on all :class:`AudioFile` objects.
+        then calls convert on all :class:`AudioFile` objects in output_files.
 
-        If the function will immediately return and :func:`AudioFileSink.wait_for_convert`
-        can be used to wait for the conversion to finish. It can also be checked with
-        :func:`AudioFileSink.is_convert_finished`
+        Any arguments and keyword arguments specified will be passed to :class:`AudioFile`.convert.
 
         If the function is called while conversion is still in process, it will
         simply return without doing anything.
+
+        Returns
+        -------
+        Optional[List[:class:`Future`]]
+            List of futures from each :class:`AudioFile`.convert call
         """
         if not self._convert_lock.acquire(blocking=False):
             return
+        if self.converted:
+            return self._convert_lock.release()
         if not self.done:
             self.cleanup()
 
-        def do_convert():
-            for file in self.output_files.values():
-                file.convert(self._create_name(file))
-            self._convert_lock.release()
-            self._is_converted.set()
+        result = await asyncio.gather(
+            *(file.convert(self._create_name(file), *args, **kwargs) for file in self.output_files.values())
+        )
 
-        threading.Thread(target=do_convert).start()
+        self.converted = True
+        self._convert_lock.release()
+
+        return result
 
     def _create_name(self, file: 'AudioFile') -> str:
         if file.user is None:
@@ -857,13 +863,30 @@ class AudioFileSink(AudioHandlingSink):
         else:
             return f"audio-{file.user.name}#{file.user.discriminator}-{file.ssrc}"
 
-    def is_convert_finished(self):
-        """Whether convert_files has been called and all the converts have finished"""
-        return self._is_converted.is_set()
 
-    async def wait_for_convert(self):
-        """Waits till convert_files is called and all the converts finished"""
-        await self._is_converted.wait()
+def get_new_path(path: str, ext: str, new_name: Optional[str] = None):
+    ext = "." + ext
+    directory, name = os.path.split(path)
+    name = new_name + ext if new_name is not None else ".".join(name.split(".")[:-1]) + ext
+    return os.path.join(directory, name)
+
+
+async def convert_with_ffmpeg(path, new_path, **kwargs):
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        '-f',
+        's16le',
+        '-ar',
+        str(OpusDecoder.SAMPLING_RATE),
+        '-ac',
+        str(OpusDecoder.CHANNELS),
+        '-y',
+        '-i',
+        path,
+        new_path,
+        **kwargs
+    )
+    await process.wait()
 
 
 class AudioFile:
@@ -935,6 +958,7 @@ class AudioFile:
         self._clean_lock.acquire()
         if self.done:
             return
+        # specifically for a scenario mentioned in _write_frame
         if self._packet_count < 7:
             self._packet_count += 1
         self._write_frame(frame)
@@ -943,7 +967,7 @@ class AudioFile:
     def _write_frame(self, frame: AudioFrame) -> None:
         # When the bot joins a vc and starts listening and a user speaks for the first time,
         # the timestamp encompasses all that silence, including silence before the bot even
-        # joined the vc. It goes in a pattern that the 6th packet has a 11 sequence skip, so
+        # joined the vc. It goes in a pattern that the 6th packet has an 11 sequence skip, so
         # this last part of the if statement gets rid of that silence.
         if self._last_timestamp is not None and not (self._packet_count == 6 and frame.sequence - self._last_sequence == 11):  # type: ignore
             silence = frame.timestamp - self._last_timestamp - OpusDecoder.SAMPLES_PER_FRAME
@@ -963,12 +987,6 @@ class AudioFile:
         elif type(self.user) == int and isinstance(user, Object):
             self.user = user
 
-    def _get_new_path(self, path: str, ext: str, new_name: Optional[str] = None) -> str:
-        ext = "." + ext
-        directory, name = os.path.split(path)
-        name = new_name + ext if new_name is not None else ".".join(name.split(".")[:-1]) + ext
-        return os.path.join(directory, name)
-
     def cleanup(self) -> None:
         """Writes remaining frames in buffer to file and then closes it."""
         self._clean_lock.acquire()
@@ -978,7 +996,7 @@ class AudioFile:
         self.done = True
         self._clean_lock.release()
 
-    def convert(self, new_name: Optional[str] = None) -> None:
+    async def convert(self, new_name: Optional[str] = None) -> None:
         """Converts the file to its formatted file type.
 
         This function is abstract. Any implementation of this function should
@@ -1012,12 +1030,11 @@ class WaveAudioFile(AudioFile):
         Same as in :class:`AudioFile`, but this attribute becomes None after convert is called.
     """
 
-    CHUNK_WRITE_SIZE = 64
     if TYPE_CHECKING:
         file: Optional[BinaryIO]
 
-    def convert(self, new_name: Optional[str] = None) -> None:
-        """Write the raw audio data to a wave file.
+    async def convert(self, new_name: Optional[str] = None, **kwargs) -> None:
+        """Uses asyncio.create_subprocess_exec to create an ffmpeg process that converts the file.
 
         Extends :class:`AudioFile`
 
@@ -1029,16 +1046,10 @@ class WaveAudioFile(AudioFile):
         if self.converted:
             return
 
-        path = self._get_new_path(self.path, "wav", new_name)
-        with wave.open(path, "wb") as wavf:
-            wavf.setnchannels(OpusDecoder.CHANNELS)
-            wavf.setsampwidth(OpusDecoder.SAMPLE_SIZE // OpusDecoder.CHANNELS)
-            wavf.setframerate(OpusDecoder.SAMPLING_RATE)
-            with open(self.path, "rb") as file:
-                while frames := file.read(OpusDecoder.FRAME_SIZE * self.CHUNK_WRITE_SIZE):
-                    wavf.writeframes(frames)
+        new_path = get_new_path(self.path, "wav", new_name)
+        await convert_with_ffmpeg(self.path, new_path, **kwargs)
 
-        self._convert_cleanup(path)
+        self._convert_cleanup(new_path)
 
 
 class MP3AudioFile(AudioFile):
@@ -1054,8 +1065,8 @@ class MP3AudioFile(AudioFile):
     if TYPE_CHECKING:
         file: Optional[BinaryIO]
 
-    def convert(self, new_name: Optional[str] = None) -> None:
-        """Write the raw audio data to an mp3 file.
+    async def convert(self, new_name: Optional[str] = None, **kwargs) -> None:
+        """Uses asyncio.create_subprocess_exec to create an ffmpeg process that converts the file.
 
         Extends :class:`AudioFile`
 
@@ -1067,26 +1078,7 @@ class MP3AudioFile(AudioFile):
         if self.converted:
             return
 
-        path = self._get_new_path(self.path, "mp3", new_name)
-        args = [
-            'ffmpeg',
-            '-f',
-            's16le',
-            '-ar',
-            str(OpusDecoder.SAMPLING_RATE),
-            '-ac',
-            str(OpusDecoder.CHANNELS),
-            '-y',
-            '-i',
-            self.path,
-            path,
-        ]
-        try:
-            process = subprocess.Popen(args, creationflags=CREATE_NO_WINDOW)
-        except FileNotFoundError:
-            raise ClientException('ffmpeg was not found.') from None
-        except subprocess.SubprocessError as exc:
-            raise ClientException('Popen failed: {0.__class__.__name__}: {0}'.format(exc)) from exc
-        process.wait()
+        new_path = get_new_path(self.path, "mp3", new_name)
+        await convert_with_ffmpeg(self.path, new_path, **kwargs)
 
-        self._convert_cleanup(path)
+        self._convert_cleanup(new_path)

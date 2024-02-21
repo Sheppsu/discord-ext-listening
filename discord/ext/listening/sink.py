@@ -591,7 +591,7 @@ class AudioSink:
 
 
 class AudioHandlingSink(AudioSink):
-    """An object extending :class:`AudioSink` which implements methods for
+    """An abstract class extending :class:`AudioSink` that implements functionality for
     dealing with out-of-order packets and delays.
     """
 
@@ -654,13 +654,19 @@ class AudioHandlingSink(AudioSink):
             self._done_validating.set()
 
     def _validate_audio_frame(self, frame: AudioFrame) -> None:
-        # 1. If audio is a silent frame, empty buffer and reset last sequence
-        # 2. If packet sequence is less than last_sequence, drop it
-        # 3a. If packet has a valid sequence, send to on_valid_audio
-        # If buffer is not empty, empty it into the queue to be validated
-        # 3b. Else, put in a buffer
-        # Buffer should be forcefully emptied (same as in 3a) when a missing frame is not received
-        # after a specific amount of time
+        # 1. If the last recorded sequence number is >= 65000 and this audio frame
+        # sequence number is <= 1000, the sequence number has likely looped back
+        # around, so we'll subtract 65536 from the last recorded sequence number
+        # to prevent issues.
+        # 2. If this audio frame sequence number is lower than the last recorded
+        # audio sequence number, drop it. The last recorded audio sequence marks the
+        # sequence number of the last validated audio frame, so this audio frame is already
+        # too late.
+        # 3. If this is the first audio frame being received, or it's the next audio
+        # frame in the sequence, it's valid. Since it's valid, the last recorded
+        # sequence number is updated, the audio frame is passed to on_valid_audio, and
+        # the buffer is emptied.
+        # 4. Otherwise, this audio frame is added to a buffer.
 
         last_sequence = self._last_sequence[frame.ssrc]
         if last_sequence >= 65000 and frame.sequence <= 1000:
@@ -700,16 +706,18 @@ class AudioHandlingSink(AudioSink):
         if len(buffer) == 0:
             return False
 
-        sorted_buffer = sorted(buffer, key=lambda f: f.sequence)
-        self._last_sequence[ssrc] = sorted_buffer[0].sequence - 1
         # prevent on_audio from putting frames in queue before these frames
         # and no conflicts on starting validation loop
         self._lock.acquire()
+
+        sorted_buffer = sorted(buffer, key=lambda f: f.sequence)
+        self._last_sequence[ssrc] = sorted_buffer[0].sequence - 1
         for frame in sorted_buffer:
             self._frame_queue.put_nowait(frame)
         self._start_validation_loop()
-        self._lock.release()
         self._buffers[ssrc] = []
+
+        self._lock.release()
         return True
 
     def on_valid_audio(self, frame: AudioFrame) -> Any:
@@ -884,7 +892,7 @@ async def convert_with_ffmpeg(path, new_path, **kwargs):
         '-i',
         path,
         new_path,
-        **kwargs
+        **kwargs,
     )
     await process.wait()
 
